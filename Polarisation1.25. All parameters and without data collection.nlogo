@@ -70,6 +70,10 @@ turtles-own [  ; turtle-specific variables
   past-conflict     ;; how many rounds has the turtle been conflicted in a row
 ]
 
+patches-own [
+  mf-context
+  patch_mf_choice
+]
 
 ; main funciton 1 - setup
 to setup
@@ -227,10 +231,6 @@ to go
   determine-unhappiness  ; determines whether a turtle is unhappy or not
   update-plot-info       ; updates globals used by the interface plots
   update-past-choices    ; updates the past-choices variable with the current round's decision
-  ; stop the model if all turtles reach happiness
-  if all? turtles [ not unhappy ] [
-    user-message "All turtles are happy!"
-    stop ]
   tick
 end
 
@@ -258,6 +258,8 @@ to update-turtles                          ; updates initial turtle variables
     set choice-weights [ 0 0 ]
     set action_taken "NC"
     set decision 0
+
+    set patch_mf_choice [ ]
 
     ; save initial neighbourhood
     set neighbour_string_pre_move string-from-list [ who ] of ( turtles-on neighbors ) ", "
@@ -301,6 +303,7 @@ to identify-friends                        ; lets turtle perform social inferenc
   ]
 end
 
+; TO DO: redo annotation to new format
 to make-turtle-choices                     ; gives a specified proportion of turtles a choice between two mfs, determines conflict from wegiths, and provides options to conflicted (disengage, copy, make marginal choice) and non-conflicted turtles (make choice from weights)
   ; (1) should a choice take place on this round?
   if choice-prevalence > random 100 or ticks < 10  [ ;; depends on interface choice prevalence or if it is one of the first rounds (to fill up past-choices)
@@ -308,14 +311,19 @@ to make-turtle-choices                     ; gives a specified proportion of tur
     ; (2) what is the shared choice of the round
     set shared-mf-choice sort list ( 1 + random 5 ) ( 1 + random 5 ) ;; randomly generates two mfs (1 = care/harm, 2 = fairness, 3 = ingorup loyalty, 4 = authority, 5 = purity)
                                                                      ;; which are given to a proportion of turtles choosing equivalent to the choice-invariance parameter (approx)
+    ask patches [
+      ifelse random 100 <= choice-invariance ;; choice-invariance parameter determines the proportion of turtles getting the shared choice defined above
+      [ set patch_mf_choice shared-mf-choice ] ;; the turtle gets the most common choice between two mfs
+      [ set patch_mf_choice sort list (1 + random 5) (1 + random 5) ] ;; otherwise, the turtle gets two random foundations (1 = care/harm, 2 = fairness, 3 = ingorup loyalty, 4 = authority, 5 = purity)
+                                                                ;; to make a choice between
+
+    ]
+
     ; (3) what proportion of turtles are choosing this round
     ask n-of (choice-proportion / 100 * count turtles) turtles [ ;; randomly pick a proportion of turtles equivalent to the choice proportion to make a choice between two mfs
 
-      ; (4) what are they chossing between
-      ifelse random 100 <= choice-invariance ;; choice-invariance parameter determines the proportion of turtles getting the shared choice defined above
-      [ set mf_choice shared-mf-choice ] ;; the turtle gets the most common choice between two mfs
-      [ set mf_choice sort list (1 + random 5) (1 + random 5) ] ;; otherwise, the turtle gets two random foundations (1 = care/harm, 2 = fairness, 3 = ingorup loyalty, 4 = authority, 5 = purity)
-                                                                ;; to make a choice between
+      ; (4) what are they choosing between
+      set mf_choice [ patch_mf_choice ] of patch-here
 
       ; (5) convert the mfs to their corresponding decision weights
       set choice-weights map get-weight mf_choice
@@ -360,7 +368,7 @@ to determine-unhappiness                   ; probabilistically determines the ha
       [ set unhappiness-prob 1 ]   ;; the turtle must be unhappy ( a turtle cannot be happy if it feels alone )
 
     ; components 2 - 4 (of 4) - conflict elements
-    if with-conflict = "yes" and conflicted and unhappiness-prob != 1 [  ;; only run for conflicted agents who have enough friends (those without enough friends are already unhappy)
+    if conflicted and unhappiness-prob != 1 [  ;; only run for conflicted agents who have enough friends (those without enough friends are already unhappy)
 
       ;; component 2 - relevance
       let mf-relevance ( sum choice-weights / 10 ) * 0.25   ;;; Average weight of the two relevant decision weights - the more relevant the conflict is (=the larger the decision weights involved),
@@ -717,8 +725,8 @@ GRAPHICS-WINDOW
 1
 1
 0
-1
-1
+0
+0
 1
 -25
 25
@@ -980,7 +988,7 @@ similar-needed
 similar-needed
 0
 100
-62.5
+50.0
 12.5
 1
 %
@@ -1047,7 +1055,7 @@ dissimilarity-tolerance
 dissimilarity-tolerance
 0
 100
-30.0
+35.0
 1
 1
 %
@@ -1186,16 +1194,6 @@ occurrences \"d\" reduce sentence [ past-choices ] of conservatives * 100 / leng
 2
 1
 11
-
-CHOOSER
-281
-10
-373
-55
-with-conflict
-with-conflict
-"yes" "no"
-0
 
 CHOOSER
 0
