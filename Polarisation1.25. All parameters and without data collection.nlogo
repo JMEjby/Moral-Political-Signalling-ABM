@@ -85,20 +85,23 @@ to setup
 
   ; create turtles on random patches
   ask patches [
-    set pcolor white  ;; patch color = white
+    set mf-context media-influence * (pxcor + pycor) ^ sqr / 50 ^ sqr
+    set pcolor ifelse-value mf-context > 0
+    [ scale-color violet mf-context 1 0 ]
+    [ scale-color green mf-context -1 0 ]  ;; patch color = white
     ; generate turtles
     if random 100 < density [ ;; roughly a proportion of patches corresponding to the density will spawn a turtle
       sprout 1 [
         set size 1
 
-        ; Generate political identity and starting weights for moral foundations
-        setup-identity
-        setup-traits
-
-
         ; Setting up choice variables
         set past-choices []   ;; choice memory is an empty list to start
         set choice-log []     ;; choice log is an empty list to start
+        set my-friends []
+
+        ; Generate political identity and starting weights for moral foundations
+        setup-identity
+        setup-traits
       ]
     ]
   ]
@@ -214,6 +217,10 @@ to setup-identity   ; gives a political identity and a starting set of weights t
     ]
     )
   ]
+
+  let weights ( list  w_care w_fair w_ingroup w_authority w_pure )
+  let norm-weights map [ w -> exp w / sum (map exp weights) ] weights
+  set past-choices n-values 5 [ weighted-prob-draw norm-weights [ 1 2 3 4 5] ]
 end
 
 to setup-traits
@@ -290,7 +297,9 @@ to identify-friends                        ; lets turtle perform social inferenc
     set friend_count length [who] of my-friends
 
     ; agentset of neighbours whi have been perceived as ingroup for more than 1 round in a row
-    set still-my-friends turtle-set remove " " map [ x -> ifelse-value ( member? x [ who ] of past-friends ) [ turtle x ] [ " " ] ] [ who ] of my-friends
+    carefully
+    [ set still-my-friends turtle-set remove " " map [ x -> ifelse-value ( member? x [ who ] of past-friends ) [ turtle x ] [ " " ] ] [ who ] of my-friends ]
+    [ set still-my-friends [] ]
     set friend_string string-from-list [ who ] of my-friends ", "
 
     ; compute the proportion of neigjbouring turtles that are perceived as friends
@@ -299,14 +308,16 @@ to identify-friends                        ; lets turtle perform social inferenc
     [set prop-similar-nearby 0]
 
     ; once friends have been identified, the most certain ones are used to update turtles decision weights
-    social-influence still-my-friends with [ length past-choices = past-choices-length ]
+    carefully
+    [ social-influence still-my-friends with [ length past-choices = past-choices-length ] ]
+    []
   ]
 end
 
 ; TO DO: redo annotation to new format
 to make-turtle-choices                     ; gives a specified proportion of turtles a choice between two mfs, determines conflict from wegiths, and provides options to conflicted (disengage, copy, make marginal choice) and non-conflicted turtles (make choice from weights)
   ; (1) should a choice take place on this round?
-  if choice-prevalence > random 100 or ticks < 10  [ ;; depends on interface choice prevalence or if it is one of the first rounds (to fill up past-choices)
+  if choice-prevalence > random 100 [ ;; depends on interface choice prevalence
 
     ; (2) what is the shared choice of the round
     set shared-mf-choice sort list ( 1 + random 5 ) ( 1 + random 5 ) ;; randomly generates two mfs (1 = care/harm, 2 = fairness, 3 = ingorup loyalty, 4 = authority, 5 = purity)
@@ -315,7 +326,6 @@ to make-turtle-choices                     ; gives a specified proportion of tur
       ifelse random 100 <= choice-invariance ;; choice-invariance parameter determines the proportion of turtles getting the shared choice defined above
       [ set patch_mf_choice shared-mf-choice ] ;; the turtle gets the most common choice between two mfs
       [ set patch_mf_choice sort list (1 + random 5) (1 + random 5) ] ;; otherwise, the turtle gets two random foundations (1 = care/harm, 2 = fairness, 3 = ingorup loyalty, 4 = authority, 5 = purity)
-                                                                ;; to make a choice between
 
     ]
 
@@ -326,7 +336,8 @@ to make-turtle-choices                     ; gives a specified proportion of tur
       set mf_choice [ patch_mf_choice ] of patch-here
 
       ; (5) convert the mfs to their corresponding decision weights
-      set choice-weights map get-weight mf_choice
+      set choice-weights map [ mf -> get-weight mf * ( ifelse-value (mf < 3 and mf-context > 0) or (mf  > 2 and mf-context < 0) [1 + abs mf-context] [1])] mf_choice
+      set choice-weights map [w -> ifelse-value w > 5 [5] w] choice-weights
 
       ; (6) is the turtle conflicted by the choice and how should it proceed
       ;; conflict criteriea 1: the mfs are not the same
@@ -1055,7 +1066,7 @@ dissimilarity-tolerance
 dissimilarity-tolerance
 0
 100
-35.0
+30.0
 1
 1
 %
@@ -1121,7 +1132,7 @@ choice-invariance
 choice-invariance
 0
 100
-99.0
+66.0
 1
 1
 %
@@ -1147,7 +1158,7 @@ choice-prevalence
 choice-prevalence
 0
 100
-33.0
+49.0
 1
 1
 %
@@ -1266,6 +1277,36 @@ PENS
 "Ingroup" 1.0 0 -2674135 true "" "plot (sum [w_ingroup] of conservatives) / (count conservatives)"
 "Authority" 1.0 0 -6459832 true "" "plot (sum [w_authority] of conservatives) / (count conservatives)"
 "Purity" 1.0 0 -955883 true "" "plot (sum [w_pure] of conservatives) / (count conservatives)"
+
+SLIDER
+281
+22
+453
+55
+media-influence
+media-influence
+0
+1
+1.0
+0.05
+1
+NIL
+HORIZONTAL
+
+SLIDER
+526
+31
+698
+64
+sqr
+sqr
+1
+2
+1.0
+1
+1
+NIL
+HORIZONTAL
 
 @#$#@#$#@
 ## WHAT IS IT?
