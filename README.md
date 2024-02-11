@@ -12,7 +12,7 @@ This repository contains:
 
 **Please read before accessing/using the model code**
 
-1. You will need to download NetLogo to run the code
+1. You will need to download NetLogo to run the code (https://ccl.northwestern.edu/netlogo/download.shtml)
 
 2. With vs. without data collection files: TLDR - unless you want to have all information about agents across time saved to your computer while running the model, use the without data collection file. The model consists of 2,000 agents with multiple associated values, many of which change for each iteration/time point. With data collection files have additional code in R and NetLogo to document these agent-level values for a set number of iterations and repeat simulations in .csv files. For Iteration 1.5, it also takes a set of parameter values to simulate multiple settings without manual resetting in-between. Due to the considerable number of values in these .csv files, they split simulations into 10 iterations sets and numbers them for reassembly. This also means that the data collection versions runs much slower, therefore, we highly recommend to use the without data collection versions unless you are specifically interested in conducting and documenting a set of simulations.
 
