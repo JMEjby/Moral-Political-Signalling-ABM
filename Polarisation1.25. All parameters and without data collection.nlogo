@@ -68,11 +68,19 @@ turtles-own [  ; turtle-specific variables
   past-choices      ;; list of most recent choice outcomes, currently, 5 items
   unhappy           ;; (boolean) whether the turtle is happy (false) or unhappy (true)
   past-conflict     ;; how many rounds has the turtle been conflicted in a row
+
+  test1
+  test2
+  test3
+  test4
+  test5
+  test6
 ]
 
 patches-own [
   mf-context
   patch_mf_choice
+  media_mf
 ]
 
 ; main funciton 1 - setup
@@ -85,10 +93,10 @@ to setup
 
   ; create turtles on random patches
   ask patches [
-    set mf-context media-influence * (pxcor + pycor) ^ sqr / 50 ^ sqr
+    set mf-context media-influence * (pxcor + pycor) / 50
     set pcolor ifelse-value mf-context > 0
     [ scale-color violet mf-context 1 0 ]
-    [ scale-color green mf-context -1 0 ]  ;; patch color = white
+    [ scale-color green mf-context -1 0 ]
     ; generate turtles
     if random 100 < density [ ;; roughly a proportion of patches corresponding to the density will spawn a turtle
       sprout 1 [
@@ -111,10 +119,12 @@ to setup
   set conservatives turtles with [identity > 0.6 ] ;; conservative turtles
 
   ; Generate initial state
+  update-patches        ;; patch properties
   update-turtles        ;; tutrlte properties
   identify-friends      ;; perceived ingroup
   determine-unhappiness ;; happiness
   update-plot-info      ;; average similarity and conflict proportions
+  move-turtles
 
   reset-ticks ; resets ticks from last run
 end
@@ -218,26 +228,26 @@ to setup-identity   ; gives a political identity and a starting set of weights t
     )
   ]
 
-  let weights ( list  w_care w_fair w_ingroup w_authority w_pure )
-  let norm-weights map [ w -> exp w / sum (map exp weights) ] weights
-  set past-choices n-values 5 [ weighted-prob-draw norm-weights [ 1 2 3 4 5] ]
+  let weights softmax ( list  w_care w_fair w_ingroup w_authority w_pure )
+  set past-choices n-values 5 [ weighted-prob-draw weights [ 1 2 3 4 5] ]
 end
 
 to setup-traits
-  set trait-influence-strength random-normal-in-bounds influence-strength 0.15 0 1  ; might be worth to change to a beta dist that is already bounded
+  set trait-influence-strength random-normal-in-bounds influence-strength 0.15 0 1
   set trait-dissimilarity-tolerance ifelse-value color = 105 [ random-normal-in-bounds ( dissimilarity-tolerance - 10 ) 10 0 100 ] [ random-normal-in-bounds dissimilarity-tolerance 10 0 100 ]
-   ; same as above
-  set trait-similar-needed ( random-possion-in-bound ( similar-needed / 100 * 8 ) 8 ) * 100 / 8 ; random-normal-in-bounds similar-needed 10 0 100
+  set trait-similar-needed ( random-possion-in-bound ( similar-needed / 100 * 8 ) 1 8 ) * 100 / 8 ; random-normal-in-bounds similar-needed 10 0 100
 end
 
 ; main function 2 - procedures for each round
 to go
+  update-patches         ; updates initial patch properties
   update-turtles         ; updates initial turtle properties
   identify-friends       ; identifies the neighbours considered ingroup
   make-turtle-choices    ; generates a choice for a give proportion of turtles
   determine-unhappiness  ; determines whether a turtle is unhappy or not
   update-plot-info       ; updates globals used by the interface plots
   update-past-choices    ; updates the past-choices variable with the current round's decision
+  move-turtles           ; moves turtles at the end of the iteration
   tick
 end
 
@@ -266,11 +276,16 @@ to update-turtles                          ; updates initial turtle variables
     set action_taken "NC"
     set decision 0
 
-    set patch_mf_choice [ ]
-
     ; save initial neighbourhood
     set neighbour_string_pre_move string-from-list [ who ] of ( turtles-on neighbors ) ", "
       ]
+end
+
+to update-patches
+  ask patches [
+    set patch_mf_choice [ ]
+    set media_mf 0
+  ]
 end
 
 to identify-friends                        ; lets turtle perform social inference about the political identity of their neighbouring turtles by comparing their past-choices
@@ -283,7 +298,7 @@ to identify-friends                        ; lets turtle perform social inferenc
     let friend-choices []   ;; the choices of the friends
 
     ; leventstein distance between sorted past-choices of the turtle and each ot their neighbours
-    foreach [ choice-string ] of ( turtles-on neighbors ) with [ length past-choices >= 3 ]   ;; goes through each neighbour's (with non-empty past-choices) past-choices strings
+    foreach [ choice-string ] of ( turtles-on neighbors )   ;; goes through each neighbour's (with non-empty past-choices) past-choices strings
       [ their-choices ->
         let ratio lev-ratio choice-string their-choices     ;; for each it computes the leventstein ratio (sum(string lengths) - ld ) / sum(string lengths)
         ; compare ratio to tolerance and account for whether they qualify as an ingroup member or not
@@ -292,9 +307,9 @@ to identify-friends                        ; lets turtle perform social inferenc
     ]
 
     ; finds turtles with ingroup past-choices and saves the agentset
-    set my-friends (turtles-on neighbors) with [ member? choice-string friend-choices ]
+    set my-friends ( turtles-on neighbors ) with [ member? choice-string friend-choices ]
     ; counts number of turtles with matching strings
-    set friend_count length [who] of my-friends
+    set friend_count length [ who ] of my-friends
 
     ; agentset of neighbours whi have been perceived as ingroup for more than 1 round in a row
     carefully
@@ -314,7 +329,7 @@ to identify-friends                        ; lets turtle perform social inferenc
   ]
 end
 
-; TO DO: redo annotation to new format
+
 to make-turtle-choices                     ; gives a specified proportion of turtles a choice between two mfs, determines conflict from wegiths, and provides options to conflicted (disengage, copy, make marginal choice) and non-conflicted turtles (make choice from weights)
   ; (1) should a choice take place on this round?
   if choice-prevalence > random 100 [ ;; depends on interface choice prevalence
@@ -326,8 +341,10 @@ to make-turtle-choices                     ; gives a specified proportion of tur
       ifelse random 100 <= choice-invariance ;; choice-invariance parameter determines the proportion of turtles getting the shared choice defined above
       [ set patch_mf_choice shared-mf-choice ] ;; the turtle gets the most common choice between two mfs
       [ set patch_mf_choice sort list (1 + random 5) (1 + random 5) ] ;; otherwise, the turtle gets two random foundations (1 = care/harm, 2 = fairness, 3 = ingorup loyalty, 4 = authority, 5 = purity)
-
+      let order-first one-of [ -1 1 ]
     ]
+
+    media-influence-mf
 
     ; (3) what proportion of turtles are choosing this round
     ask n-of (choice-proportion / 100 * count turtles) turtles [ ;; randomly pick a proportion of turtles equivalent to the choice proportion to make a choice between two mfs
@@ -336,7 +353,7 @@ to make-turtle-choices                     ; gives a specified proportion of tur
       set mf_choice [ patch_mf_choice ] of patch-here
 
       ; (5) convert the mfs to their corresponding decision weights
-      set choice-weights map [ mf -> get-weight mf * ( ifelse-value (mf < 3 and mf-context > 0) or (mf  > 2 and mf-context < 0) [1 + abs mf-context] [1])] mf_choice
+      set choice-weights map [ mf -> get-weight mf * ( ifelse-value mf = media_mf [ 1 + abs mf-context ] [1] ) ] mf_choice
       set choice-weights map [w -> ifelse-value w > 5 [5] w] choice-weights
 
       ; (6) is the turtle conflicted by the choice and how should it proceed
@@ -407,8 +424,7 @@ to determine-unhappiness                   ; probabilistically determines the ha
       [ set unhappy true
       set shape ( ifelse-value
         turtle-shape = "Square-X" [ "X" ]
-        [ "square" ] )
-      find-new-spot ]  ;;; unhappy agents move to a new spot
+        [ "square" ] ) ]
     ;; otherwise, if happy
     [ set unhappy false
       set shape "square" ]
@@ -523,6 +539,10 @@ to update-past-choices                     ; updates variables that cannot be up
   ]
 end
 
+to move-turtles
+  ask turtles [ if unhappy [ find-new-spot ] ]
+end
+
 
 ; (level 2) sub functions called by level 1 sub functions
 to deal-with-conflict                      ; determines which action is taken to deal with conflict and makes turtles perform that action
@@ -585,7 +605,7 @@ to deal-with-conflict                      ; determines which action is taken to
   (ifelse
     ;; if the agent want to copy
     action_taken = "co" [                                   ;;; The agent will copy their surrounding ingroup
-      let probs map [z -> exp z / sum (map exp comp)] comp  ;;; softmax function to generate probabilities for each option (mf1, mf2, disengage)
+      let probs softmax comp  ;;; softmax function to generate probabilities for each option (mf1, mf2, disengage)
       let copy-draw weighted-prob-draw probs choices        ;;; run weighted draw
       update-choices copy-draw action_taken]                ;;; update choices with the outcome
     ;; if they want to disengage
@@ -644,6 +664,32 @@ to social-influence [ agentset ]           ; lets a turtle update their choice w
   ]
 end
 
+to media-influence-mf
+  let mfs [ 1 2 3 4 5 ]
+
+  let in-lib-zone turtles-on ( patches with [ mf-context > 0 ] )
+  let in-zone-liberals in-lib-zone with [ identity < 0.6 ]
+
+  let in-con-zone turtles-on ( patches with [ mf-context < 0 ] )
+  let in-zone-conservatives in-con-zone with [ identity > 0.6 ]
+  let lib-media-mf 0
+  let con-media-mf 0
+
+  ifelse one-of [ -1 1 ] > 0  [
+    set lib-media-mf media-influence-first in-zone-liberals mfs
+    set con-media-mf media-influence-second in-zone-conservatives mfs lib-media-mf
+  ] [
+    set con-media-mf media-influence-first in-zone-conservatives mfs
+    set lib-media-mf media-influence-second in-zone-liberals mfs con-media-mf
+  ]
+
+  ask ( patches with [ mf-context > 0 ] )
+  [ set media_mf lib-media-mf ]
+
+  ask ( patches with [ mf-context < 0 ] )
+  [ set media_mf con-media-mf ]
+end
+
 to update-choices [outcome method]         ; short-cut to update variables when a turtle makes a decision
   set decision outcome  ; carries the outcome of a choice (to ensure all turtles makes their choice before past-choices are updated)
   set choice-log lput (list mf_choice outcome method) choice-log  ; record choices in log
@@ -651,11 +697,40 @@ to update-choices [outcome method]         ; short-cut to update variables when 
   set action_taken method  ; record how the decision was reached (cho = choice, ran = random picking, co = copying, dis = disengagement)
 end
 
+
 to find-new-spot                           ; move until a turtle finds an unoccupied spot
   rt random-float 360    ; turtle rotates a random number of degrees (between 0 and 359)
   fd random-float 10     ; turtle moves a random number of patches forward (between 0 and 9)
   if any? other turtles-here [ find-new-spot ]  ; keep going until it finds an unoccupied patch
   move-to patch-here ; move to center of unoccupied patch
+end
+
+to-report media-influence-first [ agentset mfs ]
+  let conspec-signals map [ signal -> occurrences signal ( reduce sentence [ past-choices ] of agentset ) / ( count agentset * past-choices-length ) ] mfs
+  let weights map [signal -> signal * 1 / ( sum conspec-signals ) ] conspec-signals
+
+  let mf weighted-prob-draw weights mfs
+
+  report mf
+end
+
+to-report media-influence-second [ agentset mfs agree-mf ]
+  let mf 0
+
+  ifelse media-agreement < 1
+  [ let conspec-signals map [ signal -> occurrences signal ( reduce sentence [ past-choices ] of agentset ) / ( count agentset * past-choices-length ) ] mfs
+    let weights map [signal -> signal * 1 / ( sum conspec-signals ) ] conspec-signals
+
+    let w-agree-mf item ( agree-mf - 1 ) weights
+
+    set weights map [ w -> w * ( ( 1 - media-agreement )  / ( 1 - w-agree-mf ) ) ] remove-item ( agree-mf - 1 ) weights
+    set weights insert-item ( agree-mf - 1 ) weights media-agreement
+
+    set mf weighted-prob-draw weights mfs ]
+
+  [ set mf agree-mf ]
+
+  report mf
 end
 
 to-report logistic-growth [ number ]       ; returns a value equivalent to the growth rate of logistic function for weight updating (see code book for details)
@@ -674,7 +749,7 @@ to-report random-normal-in-bounds [mid dev mmin mmax]   ; provides random draws 
   ) 2
 end
 
-to-report random-possion-in-bound [lambda mmax]
+to-report random-possion-in-bound [lambda mmin mmax]
   let result random-poisson lambda
   while [ result > mmax ] [ set result random-poisson lambda ]
   report result
@@ -682,6 +757,10 @@ end
 
 to-report get-weight [mf]                  ; exchanges a mf number (1-5) for its associated weight for a given turtle
   report item (mf - 1) (list w_care w_fair w_ingroup w_authority w_pure)
+end
+
+to-report softmax [ weight-list ]
+  report map [ w -> exp w / sum (map exp weight-list) ] weight-list
 end
 
 to-report occurrences [x the-list]         ; from NetLogo manual - counts the number of times an item appears on a list
@@ -1132,7 +1211,7 @@ choice-invariance
 choice-invariance
 0
 100
-66.0
+99.0
 1
 1
 %
@@ -1158,7 +1237,7 @@ choice-prevalence
 choice-prevalence
 0
 100
-49.0
+33.0
 1
 1
 %
@@ -1287,23 +1366,23 @@ media-influence
 media-influence
 0
 1
-1.0
+0.5
 0.05
 1
 NIL
 HORIZONTAL
 
 SLIDER
-526
-31
-698
-64
-sqr
-sqr
+454
+22
+626
+55
+media-agreement
+media-agreement
+0
 1
-2
-1.0
-1
+0.25
+0.05
 1
 NIL
 HORIZONTAL
@@ -1656,7 +1735,7 @@ false
 Polygon -7500403 true true 270 75 225 30 30 225 75 270
 Polygon -7500403 true true 30 75 75 30 270 225 225 270
 @#$#@#$#@
-NetLogo 6.2.2
+NetLogo 6.4.0
 @#$#@#$#@
 @#$#@#$#@
 @#$#@#$#@

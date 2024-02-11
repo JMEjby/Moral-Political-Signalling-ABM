@@ -1,4 +1,4 @@
-extensions [r rnd]
+extensions [sr rnd csv]
 
 ; Variables
 globals[
@@ -21,17 +21,28 @@ globals[
   liberal-perceived-percent-similar      ;; liberal turtles
   conservative-perceived-percent-similar ;; conservative
 
-  ; carries table variables for r tables to reduce r memory (cleared each round)
-  table_name     ;; holds the name of the data table
-  table_location ;; holds where the files with data tables should be saved
-  table_number   ;; holds how many tables have been made
-  sim_number     ;; holds the number of times data has been simulated (user-input)
-
   ; choice-related
   shared-mf-choice ;; the common choice of a given round (given to a proportion of turtles equivalent to choice-invaraince )
 
-  ; randomly generated seeds for reproducibility
-  seeds
+  ; carries table variables for r tables to reduce r memory (cleared each round)
+  table_name     ;; holds the name of the data table
+  store_location ;; holds where simulated data files should be saved
+  table_number   ;; holds how many tables have been made
+  sim_number     ;; holds the number of times data has been simulated (user-input)
+  current-param
+
+  ; parameter settings
+  density
+  past-choices-length
+  conflict-range
+  choice-prevalence
+  choice-invariance
+  choice-proportion
+  similar-needed
+  dissimilarity-tolerance
+  media-agreement
+  influence-strength
+  media-influence
 ]
 
 turtles-own [  ; turtle-specific variables
@@ -46,12 +57,17 @@ turtles-own [  ; turtle-specific variables
   w_authority ;; authority (4)
   w_pure      ;; purity (5)
 
+  ; traits
+  trait-influence-strength
+  trait-dissimilarity-tolerance
+  trait-similar-needed
+
   ; neighbor relations
   similar_nearby      ;; how many neighboring patches have a turtle with my political orientation?
   other-nearby        ;; how many have a turtle of another political orientation?
   total-nearby        ;; sum of previous two variables
   total-all-nearby    ;; number of possible neighbours
-  neighbourhood_string;; string of who are the turtles neighbors
+  neighbour_string_pre_move  ;; string of adjacent turtles before moving to a new spot
   friend_count        ;; number of neighbouring turtles considered ingroup from matching past-choices
   my-friends          ;; agentset containing turtles considered friends on a given round
   past-friends        ;; agentset with my-friends from last round
@@ -78,16 +94,22 @@ turtles-own [  ; turtle-specific variables
   past-choices      ;; list of most recent choice outcomes, currently, 5 items
   unhappy           ;; (boolean) whether the turtle is happy (false) or unhappy (true)
   past-conflict     ;; how many rounds has the turtle been conflicted in a row
+  my_media_mf
+]
+
+patches-own [
+  mf-context
+  patch_mf_choice
+  media_mf
 ]
 
 ; main funciton 1 - setup
+
 to setup
   ; clear previous round
   clear-all
-  r:clear
+  sr:setup
   file-close-all
-
-  ;if user-yes-or-no? "reset simulation count" [ restore-sim ]
 
   ; what number of simulations have been run
   file-open "sim_numbers.txt"
@@ -102,30 +124,37 @@ to setup
 
   ; take the seeds from the .txt
   file-open "Data collection seeds.txt"
-  set seeds file-read
+  let seeds file-read
   file-close
 
   ; use seed equivalent to number of simulations
   random-seed item ( ( sim_number ) - 1 ) seeds
 
+  ; create data store location
+  set store_location "/Volumes/Julies hard drive 1/Political Polarisation of Moral Values/Iteration 1.5 (agreement)/" ;; change this as needed
+
+  ; setup parameter settings
+  setup-params
+
   ; create turtles on random patches
   ask patches [
-    set pcolor white  ;; patch color = white
+    set mf-context media-influence * (pxcor + pycor) / 50
+    set pcolor ifelse-value mf-context > 0
+    [ scale-color violet mf-context 1 0 ]
+    [ scale-color green mf-context -1 0 ]
     ; generate turtles
     if random 100 < density [ ;; roughly a proportion of patches corresponding to the density will spawn a turtle
       sprout 1 [
         set size 1
 
-        ; randomly assign political identity
-        set identity random-normal-in-bounds 0.6 0.2 0 1.2                                   ;; assigns a value from a normal distribution (m = 0.6, sd = 0.2) bounded between 0 and 1.2
-        while [identity = 0.6] [set identity 0.59 + precision random-float (0.61 - 0.59) 2]  ;; if identity is exactly the mean, the turtle is given a random float between 0.59 and 0.61
-
-        ; Generate starting weights for moral foundations and political identity
-        setup-identity
-
         ; Setting up choice variables
         set past-choices []   ;; choice memory is an empty list to start
         set choice-log []     ;; choice log is an empty list to start
+        set my-friends []
+
+        ; Generate political identity and starting weights for moral foundations
+        setup-identity
+        setup-traits
       ]
     ]
   ]
@@ -135,112 +164,80 @@ to setup
   set conservatives turtles with [identity > 0.6 ] ;; conservative turtles
 
   ; Generate initial state
+  update-patches        ;; patch properties
   update-turtles        ;; tutrlte properties
   identify-friends      ;; perceived ingroup
   determine-unhappiness ;; happiness
   update-plot-info      ;; average similarity and conflict proportions
-
   make-data-table
+  move-turtles
 
   reset-ticks ; resets ticks from last run
-
-  export-world  ( word "/Volumes/Julies hard drive 1/Political Polarisation of Moral Values/ch pr " choice-prevalence ", ch inv " choice-invariance "/"  "sim " sim_number " - " conflict-range "cr " choice-prevalence "ch-pr " choice-invariance "ch-inv" dissimilarity-tolerance "dis-tol " influence-strength "infl.csv" )
+  export-world  ( word store_location " World sim " sim_number " - " choice-prevalence "ch-pr " choice-invariance "ch-inv " dissimilarity-tolerance "dis-tol " similar-needed "homoph " influence-strength "infl " media-influence "media-infl " media-agreement "media-agree.csv" )
 end
 
 
 ; (level 1) sub functions called by setup
+to setup-params
+; parameter settings
+  file-open "sim params.txt"
+  let params file-read
+  file-close
+  set current-param first params
+
+  let param-set csv:from-file "sim params.csv"
+  let param-names item 0 param-set
+  let param-settings item current-param param-set
+
+  set density item ( position "density" param-names) param-settings
+  set conflict-range item ( position "conflict-range" param-names) param-settings
+  set past-choices-length item ( position "past-choices-length" param-names) param-settings
+  set choice-proportion item ( position "choice-proportion" param-names) param-settings
+  set choice-prevalence item ( position "choice-prevalence" param-names) param-settings
+  set choice-invariance item ( position "choice-invariance" param-names) param-settings
+  set influence-strength item ( position "influence-strength" param-names) param-settings
+  set media-influence item ( position "media-influence" param-names) param-settings
+  set similar-needed item ( position "similar-needed" param-names) param-settings
+  set dissimilarity-tolerance item ( position "dissimilarity-tolerance" param-names ) param-settings
+  set media-agreement item ( position "media-agreement" param-names ) param-settings
+end
+
 to setup-identity   ; gives a political identity and a starting set of weights to each mf depending on this identity
+  ; randomly assign political identity
+  set identity random-normal-in-bounds 0.6 0.2 0 1.2                                   ;; assigns a value from a normal distribution (m = 0.6, sd = 0.2) bounded between 0 and 1.2
+  while [identity = 0.6] [set identity 0.59 + precision random-float (0.61 - 0.59) 2]  ;; if identity is exactly the mean, the turtle is given a random float between 0.59 and 0.61
+
   ; if turtles should only be liberal/conservative
-  ifelse n-identity = "binary" [
-    ifelse identity > 0.6 [                  ;; conservatives are any turtles with a value assigned to identity larger than .6
-      set color 105                          ;; they are given the colour blue
-      set identity_bin "conservative"        ;; they are assigned a label
-      ;; setting starting weights as draws from a normal distirbution based on data on conservatives' mfs from Graham et al. (2011)
-      set w_care random-normal-in-bounds 2.98 0.84 0 5       ;;; care (1)
-      set w_fair random-normal-in-bounds 3.02 0.73 0 5       ;;; fairness (2)
-      set w_ingroup random-normal-in-bounds 3.08 0.79 0 5    ;;; ingroup loyalty (3)
-      set w_authority random-normal-in-bounds 3.28 0.71 0 5  ;;; authority (4)
-      set w_pure random-normal-in-bounds 2.89 1.07 0 5       ;;; purity (5)
-    ] [                                      ;; if not conservative, the turtle is liberal
-      set color 14                           ;; they are given the colour red
-      set identity_bin "liberal"             ;; they are assigned a label
-      ;; setting starting weights as draws from a normal distirbution based on data on liberals' mfs from Graham et al. (2011)
-      set w_care random-normal-in-bounds 3.62 0.74 0 5       ;;; care (1)
-      set w_fair random-normal-in-bounds 3.74 0.63 0 5       ;;; fairness (2)
-      set w_ingroup random-normal-in-bounds 2.07 0.77 0 5    ;;; ingroup loyalty (3)
-      set w_authority random-normal-in-bounds 2.06 0.79 0 5  ;;; authority (4)
-      set w_pure random-normal-in-bounds 1.27 0.86 0 5       ;;; purity (5)
-    ]
+  ifelse identity > 0.6 [                  ;; conservatives are any turtles with a value assigned to identity larger than .6
+    set color 105                          ;; they are given the colour blue
+    set identity_bin "conservative"        ;; they are assigned a label
+    ;; setting starting weights as draws from a normal distirbution based on data on conservatives' mfs from Graham et al. (2011)
+    set w_care random-normal-in-bounds 2.98 0.84 0 5       ;;; care (1)
+    set w_fair random-normal-in-bounds 3.02 0.73 0 5       ;;; fairness (2)
+    set w_ingroup random-normal-in-bounds 3.08 0.79 0 5    ;;; ingroup loyalty (3)
+    set w_authority random-normal-in-bounds 3.28 0.71 0 5  ;;; authority (4)
+    set w_pure random-normal-in-bounds 2.89 1.07 0 5       ;;; purity (5)
+  ] [                                      ;; if not conservative, the turtle is liberal
+    set color 14                           ;; they are given the colour red
+    set identity_bin "liberal"             ;; they are assigned a label
+    ;; setting starting weights as draws from a normal distirbution based on data on liberals' mfs from Graham et al. (2011)
+    set w_care random-normal-in-bounds 3.62 0.74 0 5       ;;; care (1)
+    set w_fair random-normal-in-bounds 3.74 0.63 0 5       ;;; fairness (2)
+    set w_ingroup random-normal-in-bounds 2.07 0.77 0 5    ;;; ingroup loyalty (3)
+    set w_authority random-normal-in-bounds 2.06 0.79 0 5  ;;; authority (4)
+    set w_pure random-normal-in-bounds 1.27 0.86 0 5       ;;; purity (5)
   ]
   ; if turtles should have graded identities (more to less extreme conservatives/liberals)
-  [ (ifelse
-    ;; very liberal turtles (identity values at or below .2)
-    identity <= 0.2 [
-      set color ifelse-value ( identity-colour = "Graded" ) [ 12 ] [ 14 ]        ;;; they are given the colour dark red (12) or red (14) depending on colour settings in the interface
-      set identity_bin "very liberal"                                            ;;; they are assigned a label with their identity
-      ;;; setting starting weights
-      set w_care random-normal-in-bounds (3.62 + 0.74 / 3) ( 0.74 / 3 ) 0 5      ;;;: care (1) mean is .5 SDs above the liberal mean, and sd is cut in 3
-      set w_fair random-normal-in-bounds (3.74 + 0.63 / 3) ( 0.63 / 3 ) 0 5      ;;;; fairness (2) mean is .5 SDs above the liberal mean, and sd is cut in 3
-      set w_ingroup random-normal-in-bounds (2.07 - 0.77 / 3) ( 0.77 / 3 ) 0 5   ;;;; ingroup loyalty (3) mean is .5 SDs below the liberal mean, and sd is cut in 3
-      set w_authority random-normal-in-bounds (2.06 - 0.79 / 3) ( 0.79 / 3 ) 0 5 ;;;; authority (4) mean is .5 SDs below the liberal mean, and sd is cut in 3
-      set w_pure random-normal-in-bounds (1.27 - 0.86 / 3) ( 0.86 / 3 ) 0 5      ;;;; purity (5) is mean .5 SDs below the liberal mean, and sd is cut in 3
-    ]
-    ;; liberal turtles (identity values at above 0.2 and at or below 0.4)
-    identity <= 0.4 [
-      set color 14                                                  ;;; they are given the colour red
-      set identity_bin "liberal"                                    ;;; they are assigned a label with their identity
-      ;;; starting weights drawn from a normal distribution, means are from Graham et al. (2011), sds are cut in 3
-      set w_care random-normal-in-bounds 3.62 ( 0.74 / 3 ) 0 5      ;;;; care (1)
-      set w_fair random-normal-in-bounds 3.74 ( 0.63 / 3 ) 0 5      ;;;; fairness (2)
-      set w_ingroup random-normal-in-bounds 2.07 ( 0.77 / 3 ) 0 5   ;;;; ingroup loyalty (3)
-      set w_authority random-normal-in-bounds 2.06 ( 0.79 / 3 ) 0 5 ;;;; authority (4)
-      set w_pure random-normal-in-bounds 1.27 ( 0.86 / 3 ) 0 5      ;;;; purity (5)
-    ]
-    ;; slightly liberal turtles (identity value above 0.4 but below or at 0.6 )
-    identity <= 0.6 [
-      set color ifelse-value ( identity-colour = "Graded" ) [ 16 ] [ 14 ]        ;;; they are given the colour light red (16) or red (14) depending on colour settings in the interface
-      set identity_bin "slightly liberal"                                        ;;; they are assigned a label
-      ;;; setteing starting weights
-      set w_care random-normal-in-bounds (3.62 - 0.74 / 3) ( 0.74 / 3 ) 0 5      ;; care (1) mean is .5 SDs below the liberal mean, and sd is cut in 3
-      set w_fair random-normal-in-bounds (3.74 - 0.63 / 3) ( 0.63 / 3 ) 0 5      ;; fairness (2) mean is .5 SDs below the liberal mean, and sd is cut in 3
-      set w_ingroup random-normal-in-bounds (2.07 + 0.77 / 3) ( 0.77 / 3 ) 0 5   ;; ingroup loyalty (3) mean is .5 SDs above the liberal mean, and sd is cut in 3
-      set w_authority random-normal-in-bounds (2.06 + 0.79 / 3) ( 0.79 / 3 ) 0 5 ;; authority (4) mean is .5 SDs above the liberal mean, and sd is cut in 3
-      set w_pure random-normal-in-bounds (1.27 + 0.86 / 3) ( 0.86 / 3 ) 0 5      ;; purity (5) mean is .5 SDs above the liberal mean, and sd is cut in 3
-    ]
-    ;; slightly conservative turtles (identity value above 0.6 but below or at 0.8)
-    identity <= 0.8 [
-      set color ifelse-value ( identity-colour = "Graded" ) [ 107 ] [ 105 ]        ;;; they are given the colour light blue (107) or blue (105) depending on colour settings in the interface
-      set identity_bin "slightly conservative"                                     ;;; they are assigned a label
-      ;;; setteing starting weights
-      set w_care random-normal-in-bounds (2.98 + 0.84 / 3) ( 0.84 / 3 ) 0 5        ;;;; care (1) mean is .5 SDs above the conservative mean, and sd is cut in 3
-      set w_fair random-normal-in-bounds (3.02 + 0.73 / 3) ( 0.73 / 3 ) 0 5        ;;;; fairness (2) mean is .5 SDs above the conservative mean, and sd is cut in 3
-      set w_ingroup random-normal-in-bounds (3.08 - 0.79 / 3) ( 0.79 / 3 ) 0 5     ;;;; ingroup loyalty (3) mean is .5 SDs below the conservative mean, and sd is cut in 3
-      set w_authority random-normal-in-bounds (3.28 - 0.71 / 3) ( 0.71 / 3 ) 0 5   ;;;; authority (4) mean is .5 SDs below the conservative mean, and sd is cut in 3
-      set w_pure random-normal-in-bounds (2.89 - 1.07 / 3) ( 1.07 / 3 ) 0 5        ;;;; purity (5) mean is .5 SDs below the conservative mean, and sd is cut in 3
-    ]
-    ;; conservative turtles (identity value above 0.8 but below or at 1)
-    identity <= 1 [
-      set color 105                                                 ;;; they are given the colour blue
-      set identity_bin "conservative"                               ;;; they are assigned a label
-      ;;; setteing starting weights with means and sds (cut in three) from Graham et al. (2011)
-      set w_care random-normal-in-bounds 2.98 ( 0.84 / 3 ) 0 5      ;;;; care (1)
-      set w_fair random-normal-in-bounds 3.02 ( 0.73 / 3 ) 0 5      ;;;; fairness (2)
-      set w_ingroup random-normal-in-bounds 3.08 ( 0.79 / 3 ) 0 5   ;;;; ingroup loyalty (3)
-      set w_authority random-normal-in-bounds 3.28 ( 0.71 / 3 ) 0 5 ;;;; authority (4)
-      set w_pure random-normal-in-bounds 2.89 ( 1.07 / 3 ) 0 5      ;;;; purity (5)
-    ]
-    ;; very conservative turtles ( identity values above 1 but at most 1.2 - what is left-over)
-    [ set color ifelse-value ( identity-colour = "Graded" ) [ 103 ] [ 105 ]       ;;; they are given the colour dark blue (103) or blue (105) depending on colour settings in the interface
-      set identity_bin "very conservative"                                        ;;; they are assigned a label
-      ;;; setteing starting weights
-      set w_care random-normal-in-bounds (2.98 - 0.84 / 3) ( 0.84 / 3 ) 0 5       ;;;; care (1) mean is .5 SDs below the conservative mean, and sd is cut in 3
-      set w_fair random-normal-in-bounds (3.02 - 0.73 / 3) ( 0.73 / 3 ) 0 5       ;;;; fairness (2) mean is .5 SDs below the conservative mean, and sd is cut in 3
-      set w_ingroup random-normal-in-bounds (3.08 + 0.79 / 3) ( 0.79 / 3 ) 0 5    ;;;; ingroup loyalty (3) mean is .5 SDs above the conservative mean, and sd is cut in 3
-      set w_authority random-normal-in-bounds (3.28 + 0.71 / 3) ( 0.71 / 3 ) 0 5  ;;;; authority (4) mean is .5 SDs above the conservative mean, and sd is cut in 3
-      set w_pure random-normal-in-bounds (2.89 + 1.07 / 3) ( 1.07 / 3 ) 0 5       ;;;; purity (5) mean is .5 SDs above the conservative mean, and sd is cut in 3
-    ]
-    )
-  ]
+
+  let weights softmax ( list  w_care w_fair w_ingroup w_authority w_pure )
+  set past-choices n-values 5 [ weighted-prob-draw weights [ 1 2 3 4 5] ]
+end
+
+to setup-traits
+  set trait-influence-strength random-normal-in-bounds influence-strength 0.15 0 1  ; might be worth to change to a beta dist that is already bounded
+  set trait-dissimilarity-tolerance ifelse-value color = 105 [ random-normal-in-bounds ( dissimilarity-tolerance - 10 ) 10 0 100 ] [ random-normal-in-bounds dissimilarity-tolerance 10 0 100 ]
+   ; same as above
+  set trait-similar-needed ( random-possion-in-bound ( similar-needed / 100 * 8 ) 1 8 ) * 100 / 8 ; random-normal-in-bounds similar-needed 10 0 100
 end
 
 to make-data-table  ; initiates automatic compilation of turtle data into CSV files
@@ -249,30 +246,30 @@ to make-data-table  ; initiates automatic compilation of turtle data into CSV fi
     set mf_choice_tab string-from-list mf_choice ""
   ]
 
-  set table_name ( word " - " conflict-range "cr " choice-prevalence "ch-pr " choice-invariance "ch-inv" dissimilarity-tolerance "dis-tol " influence-strength "infl " )
-  set table_location "/Volumes/Julies hard drive 1/Political Polarisation of Moral Values/Model data/Iteration 1 - data collection/recollection/"  ;; specify where they will go here (like in R)!!
+  set table_name (word " - " choice-prevalence "ch-pr " choice-invariance "ch-inv " dissimilarity-tolerance "dis-tol " similar-needed "homoph " influence-strength "infl " media-influence "media-infl " media-agreement "media-agree" )
   set table_number "1" ;; the number of tables made so far - keep at 1
 
   ; converts the above into R variables
-  r:put "file_name" table_name
-  r:put "directory" table_location
-  r:put "n" table_number
-  r:put "sim_n" sim_number
+  sr:set "file_name" table_name
+  sr:set "directory" store_location
+  sr:set "n" table_number
+  sr:set "sim_n" sim_number
 
-  r:eval "library(tidyverse)"
+  sr:run "library(tidyverse)"
 
   ; create table
-  (r:putagentdf "choice_log" turtles "who" "similar_nearby" "xcor" "ycor" "identity_bin" "neighbourhood_string" "friend_count" "friend_string" "mf_choice_tab" "conflicted" "action_taken" "decision" "unhappy" "w_care" "w_fair" "w_ingroup" "w_authority" "w_pure")
-  r:eval "choice_log <- choice_log %>% mutate(time_point = 0, who = who + ( as.numeric(sim_n) * 10000) )" ; first round is tick 0, therefore, not ticks
+  (sr:set-agent-data-frame "choice_log" turtles "who" "similar_nearby" "xcor" "ycor" "identity_bin" "neighbour_string_pre_move" "friend_count" "friend_string" "mf_choice_tab" "my_media_mf" "conflicted" "action_taken" "decision" "unhappy" "w_care" "w_fair" "w_ingroup" "w_authority" "w_pure" "infl_care" "infl_fair" "infl_ingroup" "infl_authority" "infl_pure")
+  sr:run "choice_log <- choice_log %>% mutate(time_point = 0, who = who + ( as.numeric(sim_n) * 10000) )" ; first round is tick 0, therefore, not ticks
   ; to inspect effects of social on weights (disentangle effects of choices and social influence) add these to df ("infl_care" "infl_fair" "infl_ingroup" "infl_authority" "infl_pure")
 
   ; write and export file, and clear R memory
-  r:eval "write.csv(choice_log, str_c(directory, 'sim ', sim_n ,file_name, n, '.csv'))"
-  r:clear
+  sr:run "write.csv(choice_log, str_c(directory, 'sim ', sim_n ,file_name, n, '.csv'))"
+  sr:setup
 end
 
 ; main function 2 - procedures for each round
 to go
+  update-patches         ; updates initial patch properties
   update-turtles         ; updates initial turtle properties
   identify-friends       ; identifies the neighbours considered ingroup
   make-turtle-choices    ; generates a choice for a give proportion of turtles
@@ -280,17 +277,26 @@ to go
   update-plot-info       ; updates globals used by the interface plots
   update-past-choices    ; updates the past-choices variable with the current round's decision
   update-data-table
+  move-turtles           ; moves turtles at the end of the iteration
   tick
-  ; stop the model if all turtles reach happiness
-  if all? turtles [ not unhappy ]
-  [ user-message "All turtles are happy!"
-    stop ]
   ; automatically restarts after specified n of ticks
-  ifelse ticks < ticks-per-simulation
+  ifelse ticks < ticks-per-sim
   [ go ]
   [ auto-restart ]
 end
 
+to go-once
+  update-patches         ; updates initial patch properties
+  update-turtles         ; updates initial turtle properties
+  identify-friends       ; identifies the neighbours considered ingroup
+  make-turtle-choices    ; generates a choice for a give proportion of turtles
+  determine-unhappiness  ; determines whether a turtle is unhappy or not
+  update-plot-info       ; updates globals used by the interface plots
+  update-past-choices    ; updates the past-choices variable with the current round's decision
+  update-data-table
+  move-turtles           ; moves turtles at the end of the iteration
+  tick
+end
 
 ; (level 1) sub functions called by go
 to update-turtles                          ; updates initial turtle variables
@@ -309,16 +315,26 @@ to update-turtles                          ; updates initial turtle variables
     [ string-from-list sort past-choices "" ]
     [ "" ]
 
-    ; resets choice variables - mainly for R table to note when choices are made
+    ; resets choice variables
     set conflicted false
     set mf_choice [ 0 0 ]
     set choice-weights [ 0 0 ]
     set action_taken "NC"
     set decision 0
 
+    set patch_mf_choice [ ]
+
+    ; save initial neighbourhood
+    set neighbour_string_pre_move string-from-list [ who ] of ( turtles-on neighbors ) ", "
     set influ-upd [ 0 0 0 0 0 ] ; reset social influence adjustments (for R table)
-    set neighbourhood_string string-from-list [ who ] of ( turtles-on neighbors ) ", "
       ]
+end
+
+to update-patches
+  ask patches [
+    set patch_mf_choice [ ]
+    set media_mf 0
+  ]
 end
 
 to identify-friends                        ; lets turtle perform social inference about the political identity of their neighbouring turtles by comparing their past-choices
@@ -331,52 +347,63 @@ to identify-friends                        ; lets turtle perform social inferenc
     let friend-choices []   ;; the choices of the friends
 
     ; leventstein distance between sorted past-choices of the turtle and each ot their neighbours
-    foreach [ choice-string ] of ( turtles-on neighbors ) with [ length past-choices >= 3 ]   ;; goes through each neighbour's (with non-empty past-choices) past-choices strings
+    foreach [ choice-string ] of ( turtles-on neighbors )  ;; goes through each neighbour's (with non-empty past-choices) past-choices strings
       [ their-choices ->
         let ratio lev-ratio choice-string their-choices     ;; for each it computes the leventstein ratio (sum(string lengths) - ld ) / sum(string lengths)
         ; compare ratio to tolerance and account for whether they qualify as an ingroup member or not
-        if ratio * 100 >= 100 - dissimilarity-tolerance
+        if ratio * 100 >= 100 - trait-dissimilarity-tolerance
           [ set friend-choices fput their-choices friend-choices ]   ;; if they are considered ingroup, add their choices to a list to identify them
     ]
 
     ; finds turtles with ingroup past-choices and saves the agentset
-    set my-friends (turtles-on neighbors) with [ member? choice-string friend-choices ]
-
+    set my-friends ( turtles-on neighbors) with [ member? choice-string friend-choices ]
     ; counts number of turtles with matching strings
     set friend_count length [ who ] of my-friends
 
     ; agentset of neighbours whi have been perceived as ingroup for more than 1 round in a row
-    set still-my-friends turtle-set remove " " map [ x -> ifelse-value ( member? x [ who ] of past-friends ) [ turtle x ] [ " " ] ] [ who ] of my-friends
+    carefully
+    [ set still-my-friends turtle-set remove " " map [ x -> ifelse-value ( member? x [ who ] of past-friends ) [ turtle x ] [ " " ] ] [ who ] of my-friends ]
+    [ set still-my-friends [] ]
     set friend_string string-from-list [ who ] of my-friends ", "
 
     ; compute the proportion of neigjbouring turtles that are perceived as friends
     carefully
-    [set prop-similar-nearby friend_count / total-all-nearby]
-    [set prop-similar-nearby 0]
+    [ set prop-similar-nearby friend_count / total-all-nearby ]
+    [ set prop-similar-nearby 0 ]
 
     ; once friends have been identified, the most certain ones are used to update turtles decision weights
-    social-influence still-my-friends with [ length past-choices = past-choices-length ]
+    carefully
+    [ social-influence still-my-friends with [ length past-choices = past-choices-length ] ]
+    []
   ]
 end
 
 to make-turtle-choices                     ; gives a specified proportion of turtles a choice between two mfs, determines conflict from wegiths, and provides options to conflicted (disengage, copy, make marginal choice) and non-conflicted turtles (make choice from weights)
   ; (1) should a choice take place on this round?
-  if choice-prevalence > random 100 or ticks < 10  [ ;; depends on interface choice prevalence or if it is one of the first rounds (to fill up past-choices)
+  if choice-prevalence > random 100 [ ;; depends on interface choice prevalence
 
     ; (2) what is the shared choice of the round
     set shared-mf-choice sort list ( 1 + random 5 ) ( 1 + random 5 ) ;; randomly generates two mfs (1 = care/harm, 2 = fairness, 3 = ingorup loyalty, 4 = authority, 5 = purity)
                                                                      ;; which are given to a proportion of turtles choosing equivalent to the choice-invariance parameter (approx)
+    ask patches [
+      ifelse random 100 <= choice-invariance ;; choice-invariance parameter determines the proportion of turtles getting the shared choice defined above
+      [ set patch_mf_choice shared-mf-choice ] ;; the turtle gets the most common choice between two mfs
+      [ set patch_mf_choice sort list (1 + random 5) (1 + random 5) ] ;; otherwise, the turtle gets two random foundations (1 = care/harm, 2 = fairness, 3 = ingorup loyalty, 4 = authority, 5 = purity)
+
+    ]
+
+    if media-influence > 0 [ media-influence-mf ]
+
     ; (3) what proportion of turtles are choosing this round
     ask n-of (choice-proportion / 100 * count turtles) turtles [ ;; randomly pick a proportion of turtles equivalent to the choice proportion to make a choice between two mfs
 
-      ; (4) what are they chossing between
-      ifelse random 100 <= choice-invariance ;; choice-invariance parameter determines the proportion of turtles getting the shared choice defined above
-      [ set mf_choice shared-mf-choice ] ;; the turtle gets the most common choice between two mfs
-      [ set mf_choice sort list (1 + random 5) (1 + random 5) ] ;; otherwise, the turtle gets two random foundations (1 = care/harm, 2 = fairness, 3 = ingorup loyalty, 4 = authority, 5 = purity)
-                                                                ;; to make a choice between
+      ; (4) what are they choosing between
+      set mf_choice [ patch_mf_choice ] of patch-here
+      set my_media_mf [ media_mf ] of patch-here
 
       ; (5) convert the mfs to their corresponding decision weights
-      set choice-weights map get-weight mf_choice
+      set choice-weights map [ mf -> get-weight mf * ( ifelse-value mf = my_media_mf [ 1 + abs mf-context ] [ 1 ] ) ] mf_choice
+      set choice-weights map [w -> ifelse-value w > 5 [ 5 ] [ w ] ] choice-weights
 
       ; (6) is the turtle conflicted by the choice and how should it proceed
       ;; conflict criteriea 1: the mfs are not the same
@@ -387,7 +414,7 @@ to make-turtle-choices                     ; gives a specified proportion of tur
 
       ;; if fulfilling both criteria, the agent is conflicted - it proceeds to deal with the experience of conflict (copying, disengagement or picking at random)
       [ set conflicted true
-        if past-conflict < 5  ;;; a turtle only remembers its 5 most recent choices
+        if past-conflict < past-choices-length  ;;; a turtle only remembers its x most recent choices
         [ set past-conflict past-conflict + 1 ]  ;;; adds 1 to number of conflicts experienced in a row
         deal-with-conflict ]
 
@@ -414,11 +441,11 @@ to determine-unhappiness                   ; probabilistically determines the ha
     let unhappiness-prob 0 ; place holder
 
     ; component 1 (of 4) - does the turtle feel like it has enough friends
-    if prop-similar-nearby * 100 < similar-needed   ;; if the proportion of neighbours perceived as friends is below the similar-needed threshold (degree of homophily)
+    if prop-similar-nearby * 100 < trait-similar-needed   ;; if the proportion of neighbours perceived as friends is below the similar-needed threshold (degree of homophily)
       [ set unhappiness-prob 1 ]   ;; the turtle must be unhappy ( a turtle cannot be happy if it feels alone )
 
     ; components 2 - 4 (of 4) - conflict elements
-    if with-conflict = "yes" and conflicted and unhappiness-prob != 1 [  ;; only run for conflicted agents who have enough friends (those without enough friends are already unhappy)
+    if conflicted and unhappiness-prob != 1 [  ;; only run for conflicted agents who have enough friends (those without enough friends are already unhappy)
 
       ;; component 2 - relevance
       let mf-relevance ( sum choice-weights / 10 ) * 0.25   ;;; Average weight of the two relevant decision weights - the more relevant the conflict is (=the larger the decision weights involved),
@@ -443,14 +470,9 @@ to determine-unhappiness                   ; probabilistically determines the ha
     ; use the probability to determine turtle's unhappiness
     ifelse random 100 < unhappiness-prob * 100
       ;; if unhappy
-      [ set unhappy true
-      set shape ( ifelse-value
-        turtle-shape = "Square-X" [ "X" ]
-        [ "square" ] )
-      find-new-spot ]  ;;; unhappy agents move to a new spot
+      [ set unhappy true ]  ;;; unhappy agents move to a new spot
     ;; otherwise, if happy
-    [ set unhappy false
-      set shape "square" ]
+    [ set unhappy false ]
   ]
 end
 
@@ -568,49 +590,60 @@ to update-data-table                       ; exports a csv file with turtle vari
   ]
 
   ; note, r: indicates the R extension was used, i.e., what follows is R code
-  r:eval "library(tidyverse)"
+  sr:run "library(tidyverse)"
 
   ; put info held by globals back into R code
-  r:put "file_name" table_name
-  r:put "directory" table_location
-  r:put "n" table_number
-  r:put "sim_n" sim_number
+  sr:set "file_name" table_name
+  sr:set "directory" store_location
+  sr:set "n" table_number
+  sr:set "sim_n" sim_number
 
   ; retrieve table from previous round
-  r:eval "choice_log <- read.csv(str_c(directory, 'sim ', sim_n, file_name, n, '.csv')) %>% select(., -1)" ;; exporting adds a column which is removed to avoid build up
-  r:eval "choice_log$decision <- I(choice_log$decision)"   ;;; decision is a list for some reason, this fixes it
+  sr:run "choice_log <- read.csv(str_c(directory, 'sim ', sim_n, file_name, n, '.csv')) %>% select(., -1)" ;; exporting adds a column which is removed to avoid build up
+  sr:run "choice_log$decision <- I(choice_log$decision)"   ;;; decision is a list for some reason, this fixes it
 
   ; create a df with turtle variables for this round
-  r:put "round" ticks + 1  ;; number of ticks
-  (r:putagentdf "choice_log_new" turtles "who" "similar_nearby" "xcor" "ycor" "identity_bin" "neighbourhood_string" "friend_count" "friend_string" "mf_choice_tab" "conflicted" "action_taken" "decision" "unhappy" "w_care" "w_fair" "w_ingroup" "w_authority" "w_pure") ;; creating df
+  sr:set "round" ticks + 1  ;; number of ticks
+  (sr:set-agent-data-frame "choice_log_new" turtles "who" "similar_nearby" "xcor" "ycor" "identity_bin" "neighbour_string_pre_move" "friend_count" "friend_string" "mf_choice_tab" "my_media_mf" "conflicted" "action_taken" "decision" "unhappy" "w_care" "w_fair" "w_ingroup" "w_authority" "w_pure" "infl_care" "infl_fair" "infl_ingroup" "infl_authority" "infl_pure") ;; creating df
   ;; adding and mutating table variables
-  r:eval "choice_log_new <- choice_log_new %>% mutate(time_point = round, , who = who + (as.numeric(sim_n) * 10000) )"  ;;; adds time point to the new table
-  r:eval "choice_log_new$decision <- I(choice_log_new$decision)"   ;;; decision is a list for some reason, this fixes it
+  sr:run "choice_log_new <- choice_log_new %>% mutate(time_point = round, , who = who + (as.numeric(sim_n) * 10000) )"  ;;; adds time point to the new table
+  sr:run "choice_log_new$decision <- I(choice_log_new$decision)"   ;;; decision is a list for some reason, this fixes it
 
   ; either combine the rows of the two tables, or if ten rounds have already been recorded start a new table
-  ifelse r:get "nrow(choice_log)" >= 10 * (count turtles) ;; checks whether the previous table is getting too big (more than 10 rounds in one table)
+  ifelse sr:runresult "nrow(choice_log)" >= 10 * (count turtles) ;; checks whether the previous table is getting too big (more than 10 rounds in one table)
   ;; if it is too big, make a new csv for the new table
-  [ r:eval "n <- as.character(as.numeric(n) + 1)" ;;; determines the number on the csv
-    set table_number r:get "n" ;;; updates the NL global
-    r:eval "write.csv(choice_log_new, str_c(directory, 'sim ', sim_n, file_name, n,'.csv'))" ]  ;;; exports the new .csv
+  [ sr:run "n <- as.character(as.numeric(n) + 1)" ;;; determines the number on the csv
+    set table_number sr:runresult "n" ;;; updates the NL global
+    sr:run "write.csv(choice_log_new, str_c(directory, 'sim ', sim_n, file_name, n,'.csv'))" ]  ;;; exports the new .csv
   ;; otherwise, add data from this round to the previous one
-  [ r:eval "choice_log <- rbind(choice_log, choice_log_new)"  ;;; merges old and new table
-    r:eval "write.csv(choice_log, str_c(directory, 'sim ', sim_n, file_name, n, '.csv'))" ]  ;;; exports the merged table
+  [ sr:run "choice_log <- rbind(choice_log, choice_log_new)"  ;;; merges old and new table
+    sr:run "write.csv(choice_log, str_c(directory, 'sim ', sim_n, file_name, n, '.csv'))" ]  ;;; exports the merged table
 
   ; clear R memory to reduce computational strain
-  r:clear
+  sr:setup
+end
+
+to move-turtles
+  ask turtles [ if unhappy [ find-new-spot ] ]
 end
 
 to auto-restart                           ; restarts the model automatically
-  ifelse sim_number < n-simulations
-  [ setup
-    go ]
-  [ restore-sim
-    user-message ( word "Simulation halted. " n-simulations " simulations has been completed. Set up a new combination of parameters." )
-    stop ]
+  (ifelse
+    sim_number < n-sim
+    [ setup
+      go ]
+    current-param < length csv:from-file "sim params.csv"  - 1
+    [ restore-sim
+      next-param-set
+      setup
+      go ]
+    [ restore-sim
+      restore-param
+      user-message ( word "Simulation halted. " n-sim " simulations has been completed for " current-param " combinations of parameter settings." )
+      stop ])
 end
 
-to restore-sim                            ; restore the file with simulations numbers from backup file
+to restore-sim                          ; restore the file with simulations numbers from backup file
     ;; retrieve backup and store in NL local
     file-open "backup sim_numbers.txt"
     let new-sims file-read
@@ -620,6 +653,24 @@ to restore-sim                            ; restore the file with simulations nu
     file-open "sim_numbers.txt"
     file-write new-sims  ;;; replace
     file-close
+end
+
+to next-param-set
+  file-open "sim params.txt"
+  let params file-read
+  file-close
+
+  file-delete "sim params.txt"
+  file-open "sim params.txt"
+  file-write but-first params
+  file-close
+end
+
+to restore-param
+  file-delete "sim params.txt"
+  file-open "sim params.txt"
+  file-write n-values 100 [ n -> n + 1 ]
+  file-close
 end
 
 ; (level 2) sub functions called by level 1 sub functions
@@ -683,7 +734,7 @@ to deal-with-conflict                      ; determines which action is taken to
   (ifelse
     ;; if the agent want to copy
     action_taken = "co" [                                   ;;; The agent will copy their surrounding ingroup
-      let probs map [z -> exp z / sum (map exp comp)] comp  ;;; softmax function to generate probabilities for each option (mf1, mf2, disengage)
+      let probs softmax comp  ;;; softmax function to generate probabilities for each option (mf1, mf2, disengage)
       let copy-draw weighted-prob-draw probs choices        ;;; run weighted draw
       update-choices copy-draw action_taken]                ;;; update choices with the outcome
     ;; if they want to disengage
@@ -694,12 +745,12 @@ to deal-with-conflict                      ; determines which action is taken to
 end
 
 to social-influence [ agentset ]           ; lets a turtle update their choice weights based on how well their choices match the inputted agentset (e.g., their friends)
-  ; only executed if the inputted agentset is not empty
+                                           ; only executed if the inputted agentset is not empty
   if any? agentset [
 
     let decisions [ 1 2 3 4 5 ]  ;; mfs that past-choices could contain
-    ;; (note, disengagement is not counted, but if friends' past-choices "d" count > mine, the friends would have fewer mfs -> the mfs which have been disengaged from are discounted if this agent
-    ;; did not already disengage from them themselves)
+                                 ;; (note, disengagement is not counted, but if friends' past-choices "d" count > mine, the friends would have fewer mf decisions -> the mfs which have been disengaged from are discounted if this agent
+                                 ;; did not already disengage from them themselves)
 
     ; count occurrences of each mf on the turtles own past choices
     let my-choices map [x -> occurrences x past-choices ] decisions
@@ -711,24 +762,23 @@ to social-influence [ agentset ]           ; lets a turtle update their choice w
     let updates [] ;; place holder
     set influ-upd [] ;; place holder
 
-    ( foreach friend-avg my-choices decisions [ ;; the three lists that will be used (the friend average, a turtles own count and the 5 mf options)
+    ( foreach friend-avg my-choices decisions [ ;; the three lists that will be used (the friend average count, a turtles own count and the 5 mf options)
       [ their-count my-count mf ] -> ;; names for each item on each list
-
-      ;; the value to update the weights are given by logistic growth proportioned by the strength of social influence, and the difference in the turtle's and its friends proportion of each mf of past-choices
-      let upd logistic-growth get-weight mf * influence-strength * ( their-count - my-count ) / past-choices-length
+                                     ;; the value to update the weights are given by logistic growth proportioned by the strength of social influence, and the difference in the turtle's and its friends proportion of each mf of past-choices
+      let upd logistic-growth get-weight mf * trait-influence-strength * ( their-count - my-count ) / past-choices-length
       ;; update each weight with the value
       let new-weight get-weight mf + upd
 
-      ;; catch to ensure weights do not exceed their bounds
+      ;; catch function to ensure weights do not exceed their bounds
       if new-weight > 5 [ set new-weight 5 ]
-      if new-weight < 0.01 [ set new-weight 0.01 ] ;; the weights should not be 0 as they are used for division later on
+      if new-weight < 0 [ set new-weight 0.01 ] ;; the weights should not be 0 as they are used for division later on
 
       ;; adds the new weights to for each mf to a 5-item list
       set updates lput new-weight updates
       set influ-upd lput upd influ-upd ]
     )
 
-    ; the decision weights are updated (like update-past-choices, but for all 5 mfs) and update update variables for R table
+    ; the decision weights are updated (like update-past-choices, but for all 5 mfs)
     (foreach updates influ-upd decisions [ [ new-weight infl mf ] ->
       ( ifelse
         mf = 1
@@ -750,6 +800,27 @@ to social-influence [ agentset ]           ; lets a turtle update their choice w
   ]
 end
 
+to media-influence-mf
+  let mfs [ 1 2 3 4 5 ]
+  let in-lib-zone turtles-on ( patches with [ mf-context > 0 ] )
+  let in-zone-liberals in-lib-zone with [ identity < 0.6 ]
+  let in-con-zone turtles-on ( patches with [ mf-context < 0 ] )
+  let in-zone-conservatives in-con-zone with [ identity > 0.6 ]
+  let lib-media-mf 0
+  let con-media-mf 0
+  ifelse one-of [ -1 1 ] > 0  [
+    set lib-media-mf media-influence-first in-zone-liberals mfs
+    set con-media-mf media-influence-second in-zone-conservatives mfs lib-media-mf
+  ] [
+    set con-media-mf media-influence-first in-zone-conservatives mfs
+    set lib-media-mf media-influence-second in-zone-liberals mfs con-media-mf
+  ]
+  ask ( patches with [ mf-context > 0 ] )
+  [ set media_mf lib-media-mf ]
+  ask ( patches with [ mf-context < 0 ] )
+  [ set media_mf con-media-mf ]
+end
+
 to update-choices [outcome method]         ; short-cut to update variables when a turtle makes a decision
   set decision outcome  ; carries the outcome of a choice (to ensure all turtles makes their choice before past-choices are updated)
   set choice-log lput (list mf_choice outcome method) choice-log  ; record choices in log
@@ -764,8 +835,33 @@ to find-new-spot                           ; move until a turtle finds an unoccu
   move-to patch-here ; move to center of unoccupied patch
 end
 
+to-report media-influence-first [ agentset mfs ]
+  let conspec-signals map [ signal -> occurrences signal ( reduce sentence [ past-choices ] of agentset )  / ( count agentset * past-choices-length ) ] mfs
+  let weights map [signal -> signal * 1 / ( sum conspec-signals ) ] conspec-signals
+  let mf weighted-prob-draw weights mfs
+
+  report mf
+end
+
+to-report media-influence-second [ agentset mfs agree-mf ]
+  let mf 0
+  ifelse media-agreement < 1
+  [ let conspec-signals map [ signal -> occurrences signal ( reduce sentence [ past-choices ] of agentset ) / ( count agentset * past-choices-length ) ] mfs
+    let weights map [signal -> signal * 1 / ( sum conspec-signals ) ] conspec-signals
+
+    let w-agree-mf item ( agree-mf - 1 ) weights
+
+    set weights map [ w -> w * ( ( 1 - media-agreement )  / ( 1 - w-agree-mf ) ) ] remove-item ( agree-mf - 1 ) weights
+    set weights insert-item ( agree-mf - 1 ) weights media-agreement
+
+    set mf weighted-prob-draw weights mfs ]
+  [ set mf agree-mf ]
+
+  report mf
+end
+
 to-report logistic-growth [ number ]       ; returns a value equivalent to the growth rate of logistic function for weight updating (see code book for details)
-  let result ( 2.5 * exp ( -2.5 * ( number - 2.5 ) ) ) / ( 1 + exp ( -2.5 * (  number - 2.5  ) ) )^ 2  ; f'(x), when f(x) = 1 / ( 1 + e^-2.5 * (x - 2.5) ) - ensures values increase continuously when additively updating weights
+  let result (2.5 * exp ( -2.5 * ( number - 2.5 ) ) ) / ( 1 + exp ( -2.5 * ( number - 2.5 ) ) )^ 2   ; f'(x), where f(x) = 1 / ( 1 + e^-2.5 * (x-2.5) )
   ; round the result to 2 decimal places
   report precision result 2
 end
@@ -780,8 +876,18 @@ to-report random-normal-in-bounds [mid dev mmin mmax]   ; provides random draws 
   ) 2
 end
 
+to-report random-possion-in-bound [lambda mmin mmax]
+  let result random-poisson lambda
+  while [ result > mmax ] [ set result random-poisson lambda ]
+  report result
+end
+
 to-report get-weight [mf]                  ; exchanges a mf number (1-5) for its associated weight for a given turtle
   report item (mf - 1) (list w_care w_fair w_ingroup w_authority w_pure)
+end
+
+to-report softmax [ weight-list ]
+  report map [ w -> exp w / sum (map exp weight-list) ] weight-list
 end
 
 to-report occurrences [x the-list]         ; from NetLogo manual - counts the number of times an item appears on a list
@@ -836,8 +942,8 @@ GRAPHICS-WINDOW
 1
 1
 0
-1
-1
+0
+0
 1
 -25
 25
@@ -849,28 +955,13 @@ GRAPHICS-WINDOW
 ticks
 30.0
 
-SLIDER
-1
-57
-178
-90
-density
-density
-1
-100
-75.0
-1
-1
-%
-HORIZONTAL
-
 BUTTON
-88
-168
-154
-201
-Setup
-setup
+323
+22
+408
+55
+Simulate
+setup\ngo
 NIL
 1
 T
@@ -881,521 +972,31 @@ NIL
 NIL
 1
 
-MONITOR
-790
-10
-840
-55
-N
-count turtles
-17
-1
-11
-
-BUTTON
-157
-168
-242
-201
-Go
-go
-NIL
-1
-T
-OBSERVER
-NIL
-NIL
-NIL
-NIL
-1
-
-MONITOR
-1474
-165
-1533
-210
-% similar
-precision percent-similar 2
-17
-1
-11
-
-PLOT
-842
-10
-1330
-164
-Similarity over time
-Time
-% Similar
-0.0
-10.0
-0.0
-60.0
-true
-true
-"" ""
-PENS
-"Liberal" 1.0 0 -5298144 true "" "plot liberal-percent-similar"
-"Conservative" 1.0 0 -13345367 true "" "plot conservative-percent-similar"
-"Total" 1.0 0 -16777216 true "" "plot percent-similar"
-"Perceived-Liberal" 1.0 0 -1604481 true "" "plot liberal-perceived-percent-similar"
-"Perceived-Conservative" 1.0 0 -8020277 true "" "plot conservative-perceived-percent-similar"
-"Perceived-Total" 1.0 0 -4539718 true "" "plot perceived-percent-similar"
-
-PLOT
-1287
-386
-1732
-572
-MFT Fairness
-Time
-Moral relevance
-0.0
-10.0
-0.0
-5.0
-true
-true
-"" ""
-PENS
-"Total" 1.0 0 -16777216 true "" "plot (sum [w_fair] of turtles) / (count turtles)"
-"Liberals" 1.0 0 -5298144 true "" "plot (sum [w_fair] of liberals) / (count liberals)"
-"Conservatives" 1.0 0 -13345367 true "" "plot (sum [w_fair] of conservatives) / (count conservatives)"
-
-PLOT
-842
-386
-1285
-572
-MFT Care
-Time
-Moral relevance
-0.0
-10.0
-0.0
-5.0
-true
-true
-"" ""
-PENS
-"Total" 1.0 0 -16777216 true "" "plot (sum [w_care] of turtles) / (count turtles)"
-"Liberals" 1.0 0 -5298144 true "" "plot (sum [w_care] of liberals) / (count liberals)"
-"Conservatives" 1.0 0 -13345367 true "" "plot (sum [w_care] of conservatives) / (count conservatives)"
-
-PLOT
-397
-578
-840
-762
-MFT Ingroup Loyalty
-Time
-Moral relevance
-0.0
-10.0
-0.0
-5.0
-true
-true
-"" ""
-PENS
-"Total" 1.0 0 -16777216 true "" "plot (sum [w_ingroup] of turtles) / (count turtles)"
-"Liberals" 1.0 0 -5298144 true "" "plot (sum [w_ingroup] of liberals) / (count liberals)"
-"Conservatives" 1.0 0 -13345367 true "" "plot (sum [w_ingroup] of conservatives) / (count conservatives)"
-
-PLOT
-842
-573
-1285
-757
-MFT Authortity 
-Time
-Moral relevance
-0.0
-10.0
-0.0
-5.0
-true
-true
-"" ""
-PENS
-"Total" 1.0 0 -16777216 true "" "plot (sum [w_authority] of turtles) / (count turtles)"
-"Liberals" 1.0 0 -5298144 true "" "plot (sum [w_authority] of liberals) / (count liberals)"
-"Conservatives" 1.0 0 -13345367 true "" "plot (sum [w_authority] of conservatives) / (count conservatives)"
-
-PLOT
-1287
-573
-1733
-757
-MFT Purity
-Time
-Moral relevance
-0.0
-10.0
-0.0
-5.0
-true
-true
-"" ""
-PENS
-"Total" 1.0 0 -16777216 true "" "plot (sum [w_pure] of turtles) / (count turtles)"
-"Liberals" 1.0 0 -5298144 true "" "plot (sum [w_pure] of liberals) / (count liberals)"
-"Conservatives" 1.0 0 -13345367 true "" "plot (sum [w_pure] of conservatives) / (count conservatives)"
-
 SLIDER
-0
-94
-154
-127
-choice-proportion
-choice-proportion
-0
-100
-75.0
-1
-1
-%
-HORIZONTAL
-
-SLIDER
-155
-94
-319
-127
-conflict-range
-conflict-range
-0
-2
-0.3
-0.1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-1
-130
-155
-163
-similar-needed
-similar-needed
-0
-100
-62.5
-12.5
-1
-%
-HORIZONTAL
-
-PLOT
-842
-211
-1329
-385
-Conflict over time
-Time
-% Conflicted
-0.0
-10.0
-0.0
-10.0
-true
-true
-"" ""
-PENS
-"Liberals" 1.0 0 -5298144 true "" "plot liberal-conflict-proportion"
-"Conservatives" 1.0 0 -13345367 true "" "plot conservative-conflict-proportion"
-
-MONITOR
-842
-165
-918
-210
-% unhappy
-precision (count turtles with [unhappy] * 100 / count turtles ) 2
-17
-1
-11
-
-MONITOR
-920
-165
-1066
-210
-% unhappy conservatives
-precision (count conservatives with [unhappy] * 100 / count conservatives) 2
-17
-1
-11
-
-MONITOR
-1068
-165
-1214
-210
-% unhappy liberals
-precision (count liberals with [unhappy] * 100 / count liberals) 2
-17
-1
-11
-
-SLIDER
-155
-240
-320
-273
-dissimilarity-tolerance
-dissimilarity-tolerance
-10
-80
-80.0
-10
-1
-%
-HORIZONTAL
-
-CHOOSER
-93
-10
-185
-55
-identity-colour
-identity-colour
-"Binary" "Graded"
-0
-
-PLOT
-1330
-211
-1731
-385
-Disengagement over time
-Time
-% Disengaging
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"Liberals" 1.0 0 -5298144 true "" "plot count liberals with [ decision = \"d\" ] * 100 / count liberals "
-"Conservatives" 1.0 0 -14070903 true "" "plot count conservatives with [ decision = \"d\" ] * 100 / count conservatives"
-
-PLOT
-0
-484
-320
-683
-MFs Liberals
-Time
-Moral relevance
-0.0
-10.0
-0.0
-5.0
-true
-true
-"" ""
-PENS
-"Care" 1.0 0 -13791810 true "" "plot (sum [w_care] of liberals) / (count liberals)"
-"Fairness" 1.0 0 -10899396 true "" "plot (sum [w_fair] of liberals) / (count liberals)"
-"Ingroup" 1.0 0 -2674135 true "" "plot (sum [w_ingroup] of liberals) / (count liberals)"
-"Authority" 1.0 0 -6459832 true "" "plot (sum [w_authority] of liberals) / (count liberals)"
-"Purity" 1.0 0 -955883 true "" "plot (sum [w_pure] of liberals) / (count liberals)"
-
-SLIDER
-156
-205
-320
-238
-choice-invariance
-choice-invariance
-0
-100
-66.0
-33
-1
-%
-HORIZONTAL
-
-MONITOR
-1535
-165
-1626
-210
-shared choice
-shared-mf-choice
-0
-1
-11
-
-SLIDER
-0
-205
-154
-238
-choice-prevalence
-choice-prevalence
-0
-100
-33.0
-33
-1
-%
-HORIZONTAL
-
-PLOT
-1331
-10
-1727
-164
-Similarity over time for happy turtles
-Time
-% Similar
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"Total" 1.0 0 -16777216 true "" "let similar-neighbors-happy sum [ similar-nearby ] of turtles with [ not unhappy ]\nlet total-neighbors-happy sum [ total-all-nearby ] of turtles with [ not unhappy ]\nifelse any? turtles with [ not unhappy ]\n  [ plot ( similar-neighbors-happy / total-neighbors-happy ) * 100 ]\n  [ plot 0 ]"
-"pen-3" 1.0 0 -5298144 true "" "let lib-similar-neighbors-happy sum [ similar-nearby ] of liberals with [ not unhappy ]\nlet lib-total-neighbors-happy sum [ total-all-nearby ] of liberals with [ not unhappy ]\nifelse any? liberals with [ not unhappy ]\n  [ plot ( lib-similar-neighbors-happy / lib-total-neighbors-happy ) * 100 ]\n  [ plot 0 ]"
-"pen-5" 1.0 0 -13345367 true "" "let con-similar-neighbors-happy sum [ similar-nearby ] of conservatives with [ not unhappy ]\nlet con-total-neighbors-happy sum [ total-all-nearby ] of conservatives with [ not unhappy ]\nifelse any? conservatives with [ not unhappy ]\n  [ plot ( con-similar-neighbors-happy / con-total-neighbors-happy ) * 100 ]\n  [ plot 0 ]"
-
-MONITOR
-1362
-165
-1473
-210
-% d liberal choices
-occurrences \"d\" reduce sentence [ past-choices ] of liberals * 100 / length reduce sentence [ past-choices ] of liberals
-2
-1
-11
-
-MONITOR
-1216
-165
-1360
-210
-% d conservative choices
-occurrences \"d\" reduce sentence [ past-choices ] of conservatives * 100 / length reduce sentence [ past-choices ] of conservatives
-2
-1
-11
-
-CHOOSER
-281
-10
-373
-55
-with-conflict
-with-conflict
-"yes" "no"
-0
-
-CHOOSER
-0
-10
-92
-55
-n-identity
-n-identity
-"binary" "graded (6)"
-0
-
-SLIDER
-180
-57
-320
-90
-past-choices-length
-past-choices-length
-3
-10
-5.0
-1
-1
-NIL
-HORIZONTAL
-
-CHOOSER
-186
-10
-280
-55
-turtle-shape
-turtle-shape
-"Square-X" "All-Square"
-0
-
-SLIDER
-0
-240
-154
-273
-influence-strength
-influence-strength
-0
-1
-0.25
-0.25
-1
-NIL
-HORIZONTAL
-
-PLOT
-0
-288
-320
-481
-MFs Conservatives
-Time
-Moral relevance
-0.0
-10.0
-0.0
-5.0
-true
-true
-"" ""
-PENS
-"Fairness" 1.0 0 -10899396 true "" "plot (sum [w_fair] of conservatives) / (count conservatives)"
-"Care" 1.0 0 -13791810 true "" "plot (sum [w_care] of conservatives) / (count conservatives)"
-"Ingroup" 1.0 0 -2674135 true "" "plot (sum [w_ingroup] of conservatives) / (count conservatives)"
-"Authority" 1.0 0 -6459832 true "" "plot (sum [w_authority] of conservatives) / (count conservatives)"
-"Purity" 1.0 0 -955883 true "" "plot (sum [w_pure] of conservatives) / (count conservatives)"
-
-SLIDER
-374
-10
-531
-43
-ticks-per-simulation
-ticks-per-simulation
-0
-100
-100.0
-1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-532
-10
-675
-43
-n-simulations
-n-simulations
+410
+21
+508
+54
+n-sim
+n-sim
 0
 100
 20.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+509
+21
+633
+54
+ticks-per-sim
+ticks-per-sim
+0
+100
+100.0
 1
 1
 NIL
