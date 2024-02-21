@@ -89,7 +89,6 @@ to setup
 
         ; Generate political identity and starting weights for moral foundations
         setup-identity
-        setup-traits
 
         ; Setting up choice variables
         set past-choices []   ;; choice memory is an empty list to start
@@ -115,7 +114,7 @@ end
 ; (level 1) sub functions called by setup
 to setup-identity   ; gives a political identity and a starting set of weights to each mf depending on this identity
   ; randomly assign political identity
-  set identity random-normal-in-bounds 0.6 0.2 0 1.2                                   ;; assigns a value from a normal distribution (m = 0.6, sd = 0.2) bounded between 0 and 1.2
+  set identity random-normal-in-bounds 0.6 0.3 0 1.2                                   ;; assigns a value from a normal distribution (m = 0.6, sd = 0.2) bounded between 0 and 1.2
   while [identity = 0.6] [set identity 0.59 + precision random-float (0.61 - 0.59) 2]  ;; if identity is exactly the mean, the turtle is given a random float between 0.59 and 0.61
 
   ; if turtles should only be liberal/conservative
@@ -209,10 +208,6 @@ to setup-identity   ; gives a political identity and a starting set of weights t
     ]
     )
   ]
-end
-
-to setup-traits
-  if influence-var = "on" [set trait-social-influence random-normal-in-bounds influence-strength 0.1 0 1]
 end
 
 ; main function 2 - procedures for each round
@@ -1220,7 +1215,7 @@ CHOOSER
 turtle-shape
 turtle-shape
 "Square-X" "All-Square"
-1
+0
 
 SLIDER
 0
@@ -1231,7 +1226,7 @@ influence-strength
 influence-strength
 0
 1
-1.0
+0.5
 0.25
 1
 NIL
@@ -1258,39 +1253,6 @@ PENS
 "Ingroup" 1.0 0 -2674135 true "" "plot (sum [w_ingroup] of conservatives) / (count conservatives)"
 "Authority" 1.0 0 -6459832 true "" "plot (sum [w_authority] of conservatives) / (count conservatives)"
 "Purity" 1.0 0 -955883 true "" "plot (sum [w_pure] of conservatives) / (count conservatives)"
-
-SWITCH
-374
-10
-495
-43
-influence-var
-influence-var
-1
-1
--1000
-
-SWITCH
-496
-10
-649
-43
-similar-needed-var
-similar-needed-var
-1
-1
--1000
-
-SWITCH
-650
-10
-789
-43
-dissim-tol-var
-dissim-tol-var
-1
-1
--1000
 
 @#$#@#$#@
 ## WHAT IS IT?
@@ -1640,7 +1602,7 @@ false
 Polygon -7500403 true true 270 75 225 30 30 225 75 270
 Polygon -7500403 true true 30 75 75 30 270 225 225 270
 @#$#@#$#@
-NetLogo 6.2.2
+NetLogo 6.4.0
 @#$#@#$#@
 @#$#@#$#@
 @#$#@#$#@
