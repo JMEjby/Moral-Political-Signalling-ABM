@@ -68,13 +68,6 @@ turtles-own [  ; turtle-specific variables
   past-choices      ;; list of most recent choice outcomes, currently, 5 items
   unhappy           ;; (boolean) whether the turtle is happy (false) or unhappy (true)
   past-conflict     ;; how many rounds has the turtle been conflicted in a row
-
-  test1
-  test2
-  test3
-  test4
-  test5
-  test6
 ]
 
 patches-own [
